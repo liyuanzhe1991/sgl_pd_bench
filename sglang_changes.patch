@@ -1,0 +1,77 @@
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 9fb7003ef..9be62c610 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -376,6 +376,10 @@ class Scheduler(
+         self.pp_group = get_pp_group()
+         self.world_group = get_world_group()
+ 
++        # Create cross-DP communication group for entry ranks (attn_tp_rank == 0)
++        # This is used for synchronizing request counts across DP ranks
++        
++
+         # With DP attention enabled, the entry rank is attn_tp_rank==0;
+         # otherwise the entry rank is TP group local rank 0.
+         # For #11910, use the CPU communication group to broadcast VLM Python objects,
+@@ -1047,13 +1051,28 @@ class Scheduler(
+         if self.pp_rank == 0:
+             if self.attn_tp_rank == 0:
+                 recv_reqs = []
+-
++                min_reqs = 2 # max_bs_per_rank
++                max_wait = 0.2 if not len(self.waiting_queue) else 0.01 # 500ms if no waiting queue, 100ms if waiting queue
++                start_time = time.time()
++                elapsed = 0.0
++                # 简单的请求收集（暂时禁用跨 DP 同步）
+                 while True:
+                     try:
+                         recv_req = self.recv_from_tokenizer.recv_pyobj(zmq.NOBLOCK)
++                        recv_reqs.append(recv_req)
++                        prefix = self.get_print_prefix()
++                        if len(recv_reqs) >= min_reqs:
++                            logger.info(f"{prefix} ,iter: {self.forward_ct}, Recv {len(recv_reqs)} requests, wait {elapsed:.2f}s")
++                            break
+                     except zmq.ZMQError:
+-                        break
+-                    recv_reqs.append(recv_req)
++                        pass
++                    
++                    now = time.time()
++                    elapsed = now - start_time
++                    if elapsed >= max_wait:
++                            break
++                    
++                    time.sleep(0.001)
+ 
+                 while True:
+                     try:
+
+diff --git a/sgl-router/src/routers/http/pd_types.rs b/sgl-router/src/routers/http/pd_types.rs
+index 9cb6ad9e0..428dee12d 100644
+--- a/sgl-router/src/routers/http/pd_types.rs
++++ b/sgl-router/src/routers/http/pd_types.rs
+@@ -34,6 +34,7 @@ pub fn api_path(url: &str, api_path: &str) -> String {
+ 
+ use serde::Serialize;
+ 
++
+ // Optimized bootstrap wrapper for single requests
+ #[derive(Serialize)]
+ pub struct RequestWithBootstrap<'a, T: Serialize> {
+@@ -55,9 +56,14 @@ pub struct BatchRequestWithBootstrap<'a, T: Serialize> {
+ }
+ 
+ // Helper to generate bootstrap room ID
++use std::sync::atomic::{AtomicU64, Ordering};
++
++// Global counter for sequential room ID generation (like Python's itertools.count())
++static ROOM_COUNTER: AtomicU64 = AtomicU64::new(0);
+ pub fn generate_room_id() -> u64 {
+     // Generate a value in the range [0, 2^63 - 1] to match Python's random.randint(0, 2**63 - 1)
+-    rand::random::<u64>() & (i64::MAX as u64)
++    //rand::random::<u64>() & (i64::MAX as u64)
++    ROOM_COUNTER.fetch_add(1, Ordering::Relaxed)
+ }
+ 
+ // PD-specific routing policies
+

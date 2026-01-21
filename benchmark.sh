@@ -1,0 +1,14 @@
+python3 -m sglang.bench_serving \
+    --backend sglang  \
+    --tokenize-prompt \
+    --dataset-name random \
+    --model /models/DeepSeek-R1  \
+    --num-prompts 256 \
+    --random-input-len 3500   \
+    --random-output-len 1   \
+    --random-range-ratio 1    \
+    --max-concurrency 256 \
+    --seed 0   \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --warmup-requests 0 
